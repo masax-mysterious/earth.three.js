@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>🌍 Continent-Shaped Green Dots | Patterns = Real Continents</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+        .floating-menu-btn {
+            position: fixed; bottom: 25px; right: 25px; width: 52px; height: 52px;
+            background: rgba(0,20,10,0.85); backdrop-filter: blur(12px); border-radius: 50%;
+            display: flex; align-items: center; justify-content: center; cursor: pointer;
+            z-index: 200; box-shadow: 0 4px 20px rgba(0,0,0,0.4), 0 0 0 2px rgba(46,255,158,0.3);
+            transition: all 0.3s ease; border: none; color: #b6ffcf; font-size: 28px;
+        }
+        .floating-menu-btn:hover { transform: scale(1.05); background: #1e3a2f; }
+        .settings-panel {
+            position: fixed; bottom: 90px; right: 25px; width: 280px;
+            background: rgba(0,0,0,0.85); backdrop-filter: blur(12px); border-radius: 24px;
+            padding: 16px 18px; color: #ccffdd; font-size: 13px; border: 1px solid rgba(46,255,158,0.4);
+            z-index: 199; font-family: monospace; transition: opacity 0.25s ease, transform 0.2s ease;
+            opacity: 0; transform: translateY(20px); pointer-events: none;
+        }
+        .settings-panel.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
+        .settings-panel label { display: block; margin-top: 10px; font-size: 11px; }
+        .settings-panel input, .settings-panel select { width: 100%; background: #1e2a2a; border: 1px solid #2eff9e; color: #ccffdd; border-radius: 40px; padding: 6px 10px; margin-top: 4px; }
+        .settings-panel button { background: #1e3a2f; border: none; color: #b6ffcf; padding: 6px; border-radius: 40px; margin-top: 12px; cursor: pointer; width: 100%; }
+        .status-tooltip { position: fixed; bottom: 20px; left: 20px; background: rgba(0,0,0,0.65); backdrop-filter: blur(8px); padding: 6px 14px; border-radius: 32px; font-size: 12px; color: #ccffaa; font-family: monospace; border-left: 2px solid #2eff9e; pointer-events: none; z-index: 100; }
+    </style>
+</head>
+<body>
+    <div class="floating-menu-btn" id="menuToggleBtn">⚙️</div>
+    <div class="settings-panel" id="settingsPanel">
+        <div class="settings-title">🌍 CONTINENT PATTERNS (DOTS FORM SHAPES)</div>
+        <label>🌱 Dot size: <input type="range" id="dotSize" min="0.008" max="0.058" step="0.001" value="0.026"></label>
+        <label>✨ Bloom: <input type="range" id="bloomStr" min="0.1" max="1.5" step="0.01" value="0.85"></label>
+        <label>🌀 Rotation: <input type="range" id="rotSpeed" min="0" max="2.5" step="0.02" value="1.0"></label>
+        <label>🎨 Ocean presence: 
+            <select id="oceanMode">
+                <option value="none">No Ocean Dots (pure continent shapes)</option>
+                <option value="few">Faint Ocean Dots</option>
+            </select>
+        </label>
+        <button id="resetCam">Reset Camera</button>
+        <div style="font-size: 10px; text-align: center; margin-top: 10px;">✨ Green dots = only land / continent areas</div>
+    </div>
+    <div class="status-tooltip" id="globalStatus">🌍 Generating continent-shaped dot patterns...</div>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.128.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.128.0/examples/jsm/" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // --- setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x010318);
+        scene.fog = new THREE.FogExp2(0x010318, 0.00035);
+        const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 1000);
+        camera.position.set(0, 0.15, 3.5);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(innerWidth, innerHeight);
+        renderer.setPixelRatio(devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        const renderScene = new RenderPass(scene, camera);
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.85, 0.4, 0.25);
+        bloomPass.threshold = 0.05;
+        bloomPass.strength = 0.85;
+        const effectComposer = new EffectComposer(renderer);
+        effectComposer.addPass(renderScene);
+        effectComposer.addPass(bloomPass);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.autoRotate = true;
+        controls.autoRotateSpeed = 1.0;
+        controls.enableZoom = true;
+        controls.target.set(0,0,0);
+
+        let earthPointsMesh = null;
+        let cloudLayer = null;
+        let shootingStars = [];
+        let oceanMode = 'none';
+        const earthRadius = 1.18;
+        const MAX_POINTS = 72000;    // high density to clearly show continent shapes
+
+        const statusDiv = document.getElementById('globalStatus');
+        const EARTH_TEXTURE = 'https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg';
+
+        // Helper: simple particle texture
+        function createParticleTexture() {
+            const canvas = document.createElement('canvas'); canvas.width = 32; canvas.height = 32;
+            const ctx = canvas.getContext('2d');
+            ctx.beginPath(); ctx.arc(16,16,14,0,2*Math.PI); ctx.fillStyle = 'white'; ctx.fill();
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        // ---- THE KEY CHANGE: generate dots ONLY where the texture says LAND ----
+        // This makes the dot pattern itself draw the continents.
+        async function generateContinentPatternDots() {
+            statusDiv.textContent = '📡 Reading Earth map – placing dots only on continents...';
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.crossOrigin = "Anonymous";
+                img.src = EARTH_TEXTURE;
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    const data = ctx.getImageData(0, 0, img.width, img.height).data;
+
+                    // We'll generate many random candidates but only keep those on land.
+                    // To ensure even coverage, we combine Fibonacci sphere candidates with a land check.
+                    const candidates = [];
+                    const totalCandidates = 300000; // oversample to get ~70k land points
+                    for (let i = 0; i < totalCandidates; i++) {
+                        // uniform random on sphere
+                        const theta = Math.random() * Math.PI * 2;
+                        const phi = Math.acos(2 * Math.random() - 1);
+                        const x = Math.sin(phi) * Math.cos(theta);
+                        const y = Math.sin(phi) * Math.sin(theta);
+                        const z = Math.cos(phi);
+                        const lon = Math.atan2(z, x);
+                        const lat = Math.asin(y);
+                        let u = (lon + Math.PI) / (2 * Math.PI);
+                        let v = 1 - (lat + Math.PI/2) / Math.PI;
+                        u = Math.min(0.999, Math.max(0, u));
+                        v = Math.min(0.999, Math.max(0, v));
+                        const px = Math.floor(u * (img.width - 1));
+                        const py = Math.floor(v * (img.height - 1));
+                        const idx = (py * img.width + px) * 4;
+                        const r = data[idx], g = data[idx+1], b = data[idx+2];
+                        const isLand = (g > b * 0.85 && r > b * 0.65) || (g > 100 && r > 80);
+                        if (isLand) {
+                            candidates.push({ x, y, z, lon, lat });
+                        } else if (oceanMode === 'few' && Math.random() < 0.08) {
+                            // add a few faint ocean dots (sparse)
+                            candidates.push({ x, y, z, lon, lat, ocean: true });
+                        }
+                        if (candidates.length >= MAX_POINTS) break;
+                    }
+                    
+                    // Use exactly MAX_POINTS (or less)
+                    const finalPoints = candidates.slice(0, MAX_POINTS);
+                    const positions = new Float32Array(finalPoints.length * 3);
+                    const colors = new Float32Array(finalPoints.length * 3);
+                    const landBoost = new Float32Array(finalPoints.length);
+                    
+                    for (let i = 0; i < finalPoints.length; i++) {
+                        const p = finalPoints[i];
+                        const radius = earthRadius;
+                        positions[i*3] = p.x * radius;
+                        positions[i*3+1] = p.y * radius;
+                        positions[i*3+2] = p.z * radius;
+                        
+                        if (p.ocean) {
+                            // faint blue-green dots
+                            colors[i*3] = 0.15;
+                            colors[i*3+1] = 0.45;
+                            colors[i*3+2] = 0.65;
+                            landBoost[i] = 0.7;
+                        } else {
+                            // vibrant green for land (continent shapes pop)
+                            const greenVar = 0.6 + Math.random() * 0.35;
+                            colors[i*3] = 0.15 + Math.random() * 0.25;
+                            colors[i*3+1] = greenVar;
+                            colors[i*3+2] = 0.1 + Math.random() * 0.2;
+                            landBoost[i] = 1.35;
+                        }
+                    }
+                    
+                    const geometry = new THREE.BufferGeometry();
+                    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                    const randoms = new Float32Array(finalPoints.length);
+                    for (let i=0; i<finalPoints.length; i++) randoms[i] = Math.random() * Math.PI * 2;
+                    geometry.setAttribute('aRandom', new THREE.BufferAttribute(randoms, 1));
+                    geometry.setAttribute('aLandBoost', new THREE.BufferAttribute(landBoost, 1));
+                    
+                    const vertexShader = `
+                        attribute float aRandom; attribute float aLandBoost; attribute vec3 color;
+                        varying vec3 vColor; uniform float uTime; uniform float uSize;
+                        void main() {
+                            vColor = color;
+                            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                            float twinkle = 0.7 + 0.4 * sin(uTime * 2.8 + aRandom * 9.0);
+                            float sizeMult = aLandBoost;
+                            gl_PointSize = uSize * sizeMult * (0.8 + twinkle * 0.55) * (320.0 / ( - mvPosition.z ));
+                            gl_PointSize = clamp(gl_PointSize, 0.08, 0.65);
+                            gl_Position = projectionMatrix * mvPosition;
+                        }
+                    `;
+                    const fragmentShader = `
+                        uniform sampler2D uPointTexture; varying vec3 vColor;
+                        void main() {
+                            vec2 coord = gl_PointCoord;
+                            if (length(coord - 0.5) > 0.5) discard;
+                            float glow = (1.0 - length(coord - 0.5)) * 0.98;
+                            gl_FragColor = vec4(vColor + vec3(0.12, 0.28, 0.08) * glow, 0.96);
+                        }
+                    `;
+                    const material = new THREE.ShaderMaterial({
+                        uniforms: {
+                            uTime: { value: 0 },
+                            uSize: { value: parseFloat(document.getElementById('dotSize').value) },
+                            uPointTexture: { value: createParticleTexture() }
+                        },
+                        vertexShader, fragmentShader, transparent: true, blending: THREE.AdditiveBlending
+                    });
+                    
+                    if (earthPointsMesh) scene.remove(earthPointsMesh);
+                    earthPointsMesh = new THREE.Points(geometry, material);
+                    scene.add(earthPointsMesh);
+                    statusDiv.innerHTML = `✅ ${finalPoints.length.toLocaleString()} green dots forming the continents!`;
+                    setTimeout(() => statusDiv.style.opacity = '0.8', 2000);
+                    resolve();
+                };
+                img.onerror = () => {
+                    // fallback: generate simple procedural continent masks (still shape-based)
+                    generateProceduralContinentDots();
+                    resolve();
+                };
+            });
+        }
+
+        function generateProceduralContinentDots() {
+            const positions = [];
+            const colors = [];
+            const landBoost = [];
+            // rough lat/lon masks for continents
+            for (let i = 0; i < MAX_POINTS; i++) {
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                const x = Math.sin(phi) * Math.cos(theta);
+                const y = Math.sin(phi) * Math.sin(theta);
+                const z = Math.cos(phi);
+                const lonDeg = Math.atan2(z, x) * 180 / Math.PI;
+                const latDeg = Math.asin(y) * 180 / Math.PI;
+                let isLand = false;
+                // simple continent polygons
+                if ((latDeg > 15 && latDeg < 70 && lonDeg > -170 && lonDeg < -50) ||   // N America
+                    (latDeg > -55 && latDeg < 15 && lonDeg > -80 && lonDeg < -35) ||    // S America
+                    (latDeg > -35 && latDeg < 70 && lonDeg > -20 && lonDeg < 50) ||     // Europe/Africa
+                    (latDeg > 10 && latDeg < 75 && lonDeg > 50 && lonDeg < 150) ||      // Asia
+                    (latDeg > -45 && latDeg < -10 && lonDeg > 110 && lonDeg < 155) ||   // Australia
+                    (latDeg > 60 && latDeg < 83 && lonDeg > -70 && lonDeg < -20)) {     // Greenland
+                    isLand = true;
+                }
+                if (isLand || (oceanMode === 'few' && Math.random() < 0.05)) {
+                    const radius = earthRadius;
+                    positions.push(x * radius, y * radius, z * radius);
+                    if (isLand) {
+                        colors.push(0.2 + Math.random()*0.2, 0.65 + Math.random()*0.3, 0.1 + Math.random()*0.2);
+                        landBoost.push(1.35);
+                    } else {
+                        colors.push(0.1, 0.3, 0.5);
+                        landBoost.push(0.7);
+                    }
+                }
+            }
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(positions), 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colors), 3));
+            const randoms = new Float32Array(positions.length/3);
+            for (let i=0; i<randoms.length; i++) randoms[i] = Math.random()*Math.PI*2;
+            geometry.setAttribute('aRandom', new THREE.BufferAttribute(randoms, 1));
+            geometry.setAttribute('aLandBoost', new THREE.BufferAttribute(new Float32Array(landBoost), 1));
+            const material = new THREE.ShaderMaterial({
+                uniforms: { uTime: { value:0 }, uSize: { value:0.024 }, uPointTexture: { value: createParticleTexture() } },
+                vertexShader: `attribute float aRandom; attribute float aLandBoost; attribute vec3 color; varying vec3 vColor; uniform float uTime; uniform float uSize;
+                    void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position,1.0); float twinkle=0.7+0.4*sin(uTime*2.8+aRandom*9.0);
+                    gl_PointSize = uSize * aLandBoost * (0.8+twinkle*0.55)*(320.0/(-mvPosition.z)); gl_PointSize = clamp(gl_PointSize,0.08,0.65);
+                    gl_Position = projectionMatrix*mvPosition; }`,
+                fragmentShader: `uniform sampler2D uPointTexture; varying vec3 vColor; void main() { vec2 coord = gl_PointCoord; if(length(coord-0.5)>0.5) discard; float glow = (1.0-length(coord-0.5))*0.98; gl_FragColor = vec4(vColor+vec3(0.12,0.28,0.08)*glow,0.96); }`,
+                transparent: true, blending: THREE.AdditiveBlending
+            });
+            if (earthPointsMesh) scene.remove(earthPointsMesh);
+            earthPointsMesh = new THREE.Points(geometry, material);
+            scene.add(earthPointsMesh);
+        }
+
+        // --- helper visual layers (clouds, stars, shooting stars) ---
+        function addCloudLayer() {
+            const count = 28000;
+            const geo = new THREE.BufferGeometry();
+            const pos = new Float32Array(count*3);
+            for (let i=0; i<count; i++) {
+                const theta = Math.random()*Math.PI*2, phi = Math.acos(2*Math.random()-1);
+                const r = earthRadius + 0.048 + Math.random()*0.04;
+                pos[i*3] = r * Math.sin(phi)*Math.cos(theta);
+                pos[i*3+1] = r * Math.sin(phi)*Math.sin(theta);
+                pos[i*3+2] = r * Math.cos(phi);
+            }
+            geo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+            const mat = new THREE.PointsMaterial({ color: 0xb5ffdd, size: 0.011, transparent: true, opacity: 0.27, blending: THREE.AdditiveBlending });
+            cloudLayer = new THREE.Points(geo, mat);
+            scene.add(cloudLayer);
+        }
+        function addMilkyWay() {
+            const starGeo = new THREE.BufferGeometry();
+            const starCount = 6800;
+            const starPos = new Float32Array(starCount*3);
+            for (let i=0; i<starCount; i++) {
+                const r = 140 + Math.random()*100;
+                const theta = Math.random()*Math.PI*2, phi = Math.acos(2*Math.random()-1);
+                starPos[i*3] = r * Math.sin(phi)*Math.cos(theta);
+                starPos[i*3+1] = r * Math.sin(phi)*Math.sin(theta);
+                starPos[i*3+2] = r * Math.cos(phi);
+            }
+            starGeo.setAttribute('position', new THREE.BufferAttribute(starPos,3));
+            scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.18, transparent: true, blending: THREE.AdditiveBlending })));
+        }
+        function initShootingStars() {
+            for (let i=0;i<60;i++) {
+                const star = { active: false, pos: new THREE.Vector3(), vel: new THREE.Vector3(), life:0, mesh: null };
+                const geom = new THREE.BufferGeometry(); geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6),3));
+                star.mesh = new THREE.LineSegments(geom, new THREE.LineBasicMaterial({ color: 0xffcc88, transparent: true, blending: THREE.AdditiveBlending }));
+                scene.add(star.mesh);
+                shootingStars.push(star);
+            }
+            setInterval(() => {
+                const inactive = shootingStars.filter(s => !s.active);
+                if (inactive.length) {
+                    const star = inactive[0];
+                    star.active = true; star.life = 1.0;
+                    const dir = new THREE.Vector3(Math.random()-0.5, Math.random()-0.5, Math.random()-0.5).normalize();
+                    star.pos.copy(dir.multiplyScalar(3.8));
+                    star.vel = dir.clone().normalize().multiplyScalar(0.058);
+                }
+            }, 2800);
+        }
+        function updateShootingStars() {
+            shootingStars.forEach(s => {
+                if (!s.active) return;
+                s.life -= 0.014;
+                if (s.life <= 0) { s.active = false; s.mesh.visible = false; return; }
+                s.mesh.visible = true;
+                s.pos.add(s.vel);
+                const pts = [s.pos.clone(), s.pos.clone().add(s.vel.clone().multiplyScalar(2.4))];
+                const positions = new Float32Array([pts[0].x, pts[0].y, pts[0].z, pts[1].x, pts[1].y, pts[1].z]);
+                s.mesh.geometry.dispose();
+                const newGeom = new THREE.BufferGeometry();
+                newGeom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                s.mesh.geometry = newGeom;
+                s.mesh.material.opacity = s.life * 0.85;
+            });
+        }
+
+        // --- lighting & UI
+        const sunLight = new THREE.DirectionalLight(0xffeedd, 1.1);
+        sunLight.position.set(2,1.5,1.2);
+        scene.add(sunLight);
+        scene.add(new THREE.AmbientLight(0x222c2a));
+        function updateSun(deg) { const rad=deg*Math.PI/180; sunLight.position.set(Math.cos(rad)*2.6, 1.3, Math.sin(rad)*2.6); }
+
+        document.getElementById('menuToggleBtn').onclick = () => document.getElementById('settingsPanel').classList.toggle('visible');
+        document.getElementById('dotSize').addEventListener('input', e => { if(earthPointsMesh?.material.uniforms) earthPointsMesh.material.uniforms.uSize.value = parseFloat(e.target.value); });
+        document.getElementById('bloomStr').addEventListener('input', e => bloomPass.strength = parseFloat(e.target.value));
+        document.getElementById('rotSpeed').addEventListener('input', e => controls.autoRotateSpeed = parseFloat(e.target.value));
+        document.getElementById('oceanMode').addEventListener('change', e => { oceanMode = e.target.value; generateContinentPatternDots(); });
+        document.getElementById('resetCam').onclick = () => { camera.position.set(0,0.15,3.5); controls.target.set(0,0,0); controls.update(); };
+        document.getElementById('sunAngle')?.addEventListener('input', e => updateSun(parseInt(e.target.value)));
+        // add sun slider to panel manually
+        const sunSlider = document.createElement('label'); sunSlider.innerHTML = '☀️ Sun angle: <input type="range" id="sunAngle" min="0" max="360" step="1" value="120">';
+        document.getElementById('settingsPanel').insertBefore(sunSlider, document.getElementById('resetCam'));
+        document.getElementById('sunAngle').addEventListener('input', e => updateSun(parseInt(e.target.value)));
+
+        let timeU = 0;
+        function animate() {
+            requestAnimationFrame(animate);
+            timeU += 0.016;
+            if (earthPointsMesh?.material.uniforms) earthPointsMesh.material.uniforms.uTime.value = timeU;
+            if (cloudLayer) cloudLayer.rotation.y += 0.0005;
+            updateShootingStars();
+            controls.update();
+            effectComposer.render();
+        }
+        animate();
+        window.addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); effectComposer.setSize(innerWidth,innerHeight); renderer.setSize(innerWidth,innerHeight); });
+        
+        addMilkyWay();
+        addCloudLayer();
+        initShootingStars();
+        generateContinentPatternDots();
+        updateSun(120);
+    </script>
+</body>
+</html>
